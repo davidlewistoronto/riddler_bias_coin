@@ -9,14 +9,16 @@
 #define my_assert(x, y) if (!(x)) {fprintf (stderr, "assert botched for %s at %d %s\n", y, __LINE__, __FILE__);barf("assertion failure",__LINE__);}
 
 #define max_poly_order	50
-#define max_root_iters	200
+#define max_root_iters	300
 #define root_converge_val		1e-14
 #define max_inputs		20
 
 #define n_combin_table 21
 
 int combin_table [n_combin_table] [n_combin_table];
+
 bool debug_solve = false;
+
 #include <boost/multiprecision/gmp.hpp>
 
 using namespace std;
@@ -48,6 +50,7 @@ double mpf_get_root (int n_coeff, double *coeff, double xstart)
 	int icoeff;
 	int fval_cvg_flag;
 	int iiter;
+	double ret;
 
 	for (i = 0; i < n_coeff; i++)
 	{	mpf_init2 (mp_coeff [i], mpf_precision);
@@ -65,7 +68,7 @@ double mpf_get_root (int n_coeff, double *coeff, double xstart)
 	mpf_init2 (damp, mpf_precision);
 
 	mpf_set_d (x, xstart);
-	mpf_set_d (f_converge_tol, 1e-100);
+	mpf_set_d (f_converge_tol, 1e-130);
 	mpf_set_d (damp, 1.0);
 
 	/* eval fval */
@@ -125,6 +128,9 @@ double mpf_get_root (int n_coeff, double *coeff, double xstart)
 		iiter++;
 
 	}
+
+	ret = mpf_get_d (x);
+
 	for (i = 0; i < n_coeff; i++)
 	{	mpf_clear (mp_coeff [i]);
 	}
@@ -140,7 +146,7 @@ double mpf_get_root (int n_coeff, double *coeff, double xstart)
 	mpf_clear (damp);
 
 	my_assert (iiter < max_root_iters, "newton convergence");
-	return mpf_get_d (x);
+	return ret;
 }
 
 #define my_max(x,y) ((x)>(y)?(x):(y))
@@ -346,44 +352,56 @@ int minus_one_to_n (int n)
 void solve_set (int n_one_set [max_inputs], int n_inputs)
 {	int i_one;
 	my_poly s_poly;
-    int i_zero;
-    int n_one;
-    int i_term;
-    int ip;
-    double p;
-    double psolve;
+	int i_zero;
+	int n_one;
+	int i_term;
+	int ip;
+	double p;
+	double psolve;
 
-	printf ("solve");
-    for (i_one = 0; i_one <= n_inputs; i_one++)
-    {	printf (" %d", n_one_set [i_one]);
-    }
+	if (debug_solve)
+	{	printf ("solve");
+		for (i_one = 0; i_one <= n_inputs; i_one++)
+		{	printf (" %d", n_one_set [i_one]);
+		}
+	}
 
-    s_poly.n_coeff = n_inputs + 1;
-    for (i_one = 0; i_one <= n_inputs; i_one++)
-    {	n_one = n_one_set [i_one];
-    	i_zero = n_inputs - i_one;
-        /* poly is n_one * (p ^ i_one * (1 - p) ^ i_zero) */
+	s_poly.n_coeff = n_inputs + 1;
+	for (i_one = 0; i_one <= n_inputs; i_one++)
+	{	n_one = n_one_set [i_one];
+		i_zero = n_inputs - i_one;
+		/* poly is n_one * (p ^ i_one * (1 - p) ^ i_zero) */
 
-        /* coefficients of (1 - p) ^ i_zero are combin_table [i_zero] [i] * (-1 ^ (i) */
+		/* coefficients of (1 - p) ^ i_zero are combin_table [i_zero] [i] * (-1 ^ (i) */
 
-        for (i_term = 0; i_term <= i_zero; i_term++)
-        {	s_poly.coeff [i_one + i_term] += n_one * combin_table [i_zero] [i_term] * minus_one_to_n (i_term);
-        }
-    }
-    s_poly.printlf (" poly");
+		for (i_term = 0; i_term <= i_zero; i_term++)
+		{	s_poly.coeff [i_one + i_term] += n_one * combin_table [i_zero] [i_term] * minus_one_to_n (i_term);
+		}
+	}
+	if (debug_solve)
+	{	s_poly.printlf (" poly");
+	}
 
-    /* solve for poly = 0.5 */
+	/* the set of functions has symmetry about both x = .5 and y = .5 so we can consider only
+	 * functions with f(0) = 0, and search for a root in [0..0.5].
+	 * That is, if there is a function f(x), there also exists f(1-x), 1-f(x), and 1-f(1-x).
+	 */
 
-    s_poly.coeff [0] -= 0.5;
-    for (ip = 0; ip < 1000; ip++)
-    {	p = ip * .001;
-    	if (s_poly.eval_at (p) * s_poly.eval_at (p + .001) <= 0)
-        {
-//		psolve = s_poly.get_root (p);
-		psolve = mpf_get_root (s_poly.n_coeff, s_poly.coeff, p);
-        	printf ("root %1.17g\n", psolve);
-        }
-    }
+	if (s_poly.eval_at (0.0) <= 1e-9)
+	{	/* solve for poly = 0.5 */
+	
+		s_poly.coeff [0] -= 0.5;
+		/* only search for a root in 0..0.5 */
+		for (ip = 0; ip < 500; ip++)
+		{	p = ip * .001;
+			if (s_poly.eval_at (p) * s_poly.eval_at (p + .001) <= 0)
+			{
+//			psolve = s_poly.get_root (p);
+			psolve = mpf_get_root (s_poly.n_coeff, s_poly.coeff, p);
+				printf ("root %1.17g\n", psolve);
+			}
+		}
+	}
 
 }
 
@@ -391,14 +409,14 @@ void solve_puz_recur (int n_one_set [max_inputs], int ilevel, int n_inputs)
 {	int i_one;
 
 	if (ilevel == n_inputs + 1)
-    {	solve_set (n_one_set, n_inputs);
-    }
-    else
-    {	for (i_one = 0; i_one <= combin_table [n_inputs] [ilevel]; i_one++)
-    	{	n_one_set [ilevel] = i_one;
-        	solve_puz_recur (n_one_set, ilevel + 1, n_inputs);
-        }
-    }
+	{	solve_set (n_one_set, n_inputs);
+	}
+	else
+	{	for (i_one = 0; i_one <= combin_table [n_inputs] [ilevel]; i_one++)
+		{	n_one_set [ilevel] = i_one;
+			solve_puz_recur (n_one_set, ilevel + 1, n_inputs);
+		}
+	}
 }
 
 void solve_puz (int n_inputs)
