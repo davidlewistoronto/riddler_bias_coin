@@ -68,7 +68,7 @@ double mpf_get_root (int n_coeff, double *coeff, double xstart)
 	mpf_init2 (damp, mpf_precision);
 
 	mpf_set_d (x, xstart);
-	mpf_set_d (f_converge_tol, 1e-130);
+	mpf_set_d (f_converge_tol, 1e-140);
 	mpf_set_d (damp, 1.0);
 
 	/* eval fval */
@@ -128,6 +128,9 @@ double mpf_get_root (int n_coeff, double *coeff, double xstart)
 		iiter++;
 
 	}
+	printf ("mpf ");
+	mpf_out_str (stdout, 10, 20, x);
+	printf ("\n");
 
 	ret = mpf_get_d (x);
 
