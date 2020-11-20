@@ -9,8 +9,10 @@
 #define my_assert(x, y) if (!(x)) {fprintf (stderr, "assert botched for %s at %d %s\n", y, __LINE__, __FILE__);barf("assertion failure",__LINE__);}
 
 #define max_poly_order	50
-#define max_root_iters	300
+#define max_bin_iters	20
+#define max_newton_iters	300
 #define root_converge_val		1e-14
+#define mpf_converge_val		1e-140
 #define max_inputs		20
 
 #define n_combin_table 21
@@ -68,7 +70,7 @@ double mpf_get_root (int n_coeff, double *coeff, double xstart)
 	mpf_init2 (damp, mpf_precision);
 
 	mpf_set_d (x, xstart);
-	mpf_set_d (f_converge_tol, 1e-140);
+	mpf_set_d (f_converge_tol, mpf_converge_val);
 	mpf_set_d (damp, 1.0);
 
 	/* eval fval */
@@ -83,7 +85,7 @@ double mpf_get_root (int n_coeff, double *coeff, double xstart)
 	fval_cvg_flag = mpf_cmp (fval_abs, f_converge_tol);
 	iiter = 0;
 	
-	while (iiter < max_root_iters && fval_cvg_flag > 0)
+	while (iiter < max_newton_iters && fval_cvg_flag > 0)
 	{	/* eval dfval */
 		mpf_set_d (dfval, 0);
 		mpf_set_d (xpow, 1.0);
@@ -128,9 +130,11 @@ double mpf_get_root (int n_coeff, double *coeff, double xstart)
 		iiter++;
 
 	}
+#ifdef print_mpf
 	printf ("mpf ");
 	mpf_out_str (stdout, 10, 20, x);
 	printf ("\n");
+#endif
 
 	ret = mpf_get_d (x);
 
@@ -148,7 +152,7 @@ double mpf_get_root (int n_coeff, double *coeff, double xstart)
 	mpf_clear (mp_icoeff);
 	mpf_clear (damp);
 
-	my_assert (iiter < max_root_iters, "newton convergence");
+	my_assert (iiter < max_newton_iters, "newton convergence");
 	return ret;
 }
 
@@ -165,9 +169,11 @@ class my_poly
 		double eval_integral_at (double x);
 		double eval_deriv_at (double x);
 		void get_integral (my_poly *p);
+		void get_deriv (my_poly *p);
 		void scale_x (double s);
 		void translate_x (double x, my_poly *p);
 		double get_root (double xstart);
+		void get_all_roots (double *roots, int &nroots, bool precise);
 		void print (void);
 		void printlf (char *s);
 
@@ -265,6 +271,21 @@ void my_poly::get_integral (my_poly *p_int)
 	p_int->n_coeff = n_coeff + 1;
 }
 
+void my_poly::get_deriv (my_poly *p_int)
+{	int i;
+
+	for (i = 0; i < n_coeff - 1; i++)
+	{	p_int->coeff [i] = coeff [i + 1] * (i + 1);
+	}
+	if (n_coeff == 1)
+	{	p_int->n_coeff = 1;
+		p_int->coeff [0] = 0.0;
+	}
+	else
+	{	p_int->n_coeff = n_coeff - 1;
+	}
+}
+
 double my_poly::eval_deriv_at (double x)
 {	int i;
 	double xpow;
@@ -303,12 +324,12 @@ double my_poly::get_root (double xstart)
 	iiter = 0;
 	x = xstart;
 	p_val = eval_at (x);
-	while (iiter < max_root_iters && fabs (p_val) > root_converge_val)
+	while (iiter < max_newton_iters && fabs (p_val) > root_converge_val)
 	{	x = x - p_val / eval_deriv_at (x);
 		p_val = eval_at (x);
 		iiter++;
 	}
-	my_assert (iiter < max_root_iters, "newton convergence");
+	my_assert (iiter < max_newton_iters, "newton convergence");
 	return x;
 }
 #else
@@ -319,19 +340,19 @@ double my_poly::get_root (double xstart)
 	double damp;
 
 	damp = 1;
-	iiter = max_root_iters;
-	while (damp > .001 && iiter == max_root_iters)
+	iiter = max_newton_iters;
+	while (damp > .001 && iiter == max_newton_iters)
 	{	iiter = 0;
 		x = xstart;
 		p_val = eval_at (x);
-		while (iiter < max_root_iters && fabs (p_val) > root_converge_val)
+		while (iiter < max_newton_iters && fabs (p_val) > root_converge_val)
 		{	x = x - damp * p_val / eval_deriv_at (x);
 			p_val = eval_at (x);
 			iiter++;
 		}
 		damp *= 0.9;
 	}
-	my_assert (iiter < max_root_iters, "newton convergence");
+	my_assert (iiter < max_newton_iters, "newton convergence");
 	return x;
 }
 #endif
@@ -352,6 +373,111 @@ int minus_one_to_n (int n)
 {	return (1 - 2 * (n & 1));
 }
 
+void my_poly::get_all_roots (double *roots, int &nroots, bool precise)
+{   int n_deriv_roots;
+	my_poly my_deriv;
+	double deriv_roots [max_poly_order];
+	int iroot;
+	double lower_root_bound;
+	double upper_root_bound;
+	int icoeff;
+	double root_test1;
+	double root_test2;
+	double root_next;
+	double root_eval;
+	int iiter;
+
+	lower_root_bound = 0.0;
+	upper_root_bound = 0.5 + root_converge_val;
+	while (coeff [n_coeff - 1] == 0 && n_coeff > 1)
+	{	n_coeff--;
+	}
+	if (n_coeff == 1)
+	{	nroots = 0;
+	}
+	else if (n_coeff == 2)
+	{	roots [0] = coeff [0] / coeff [1];
+		if (roots [0] >= lower_root_bound && roots [0] <= upper_root_bound)
+		{	nroots = 1;
+		}
+		else
+		{	nroots = 0;
+		}
+	}
+	else
+	{  	get_deriv (&my_deriv);
+		my_deriv.get_all_roots (deriv_roots, n_deriv_roots, false);
+
+		/* find bounds on roots */
+		nroots = 0;
+		for (iroot = 0; iroot <= n_deriv_roots; iroot++)
+		{	if (iroot == 0)
+			{	root_test1 = lower_root_bound;
+			}
+			else
+			{	root_test1 = deriv_roots [iroot - 1];
+			}
+			if (iroot == n_deriv_roots)
+			{	root_test2 = upper_root_bound;
+			}
+			else
+			{	root_test2 = deriv_roots [iroot];
+			}
+
+			if (eval_at (root_test1) * eval_at (root_test2) <= 0)
+			{
+				iiter = 0;
+//				while (iiter < max_bin_iters && fabs (root_test1 - root_test2) >= root_converge_val &&
+//						fabs (eval_at (root_test1) - eval_at (root_test2)) >= root_converge_val)
+				while (iiter < max_bin_iters && fabs (root_test1 - root_test2) >= root_converge_val)
+				{	root_next = 0.5 * (root_test1 + root_test2);
+					root_eval = eval_at (root_next);
+					if (eval_at (root_test1) >= 0 & eval_at (root_test2) <= 0)
+					{	if (root_eval >= 0)
+						{	root_test1 = root_next;
+						}
+						else
+						{	root_test2 = root_next;
+						}
+					}
+					else
+					{   if (root_eval >= 0)
+						{	root_test2 = root_next;
+						}
+						else
+						{	root_test1 = root_next;
+						}
+					}
+				}
+
+#ifdef use_secant
+				iiter = 0;
+				while (iiter < max_newton_iters && fabs (root_test1 - root_test2) >= root_converge_val &&
+						fabs (eval_at (root_test1) - eval_at (root_test2)) >= root_converge_val)
+				{	root_next = root_test1 - eval_at (root_test1) * (root_test2 - root_test1) / (eval_at (root_test2) - eval_at (root_test1));
+					root_test1 = root_test2;
+					root_test2 = root_next;
+					iiter++;
+				}
+#endif
+				root_next = 0.5 * (root_test1 + root_test2);
+                if (precise)
+                {
+#ifdef use_ieee_root
+					root_next = get_root (root_next);
+#else
+					root_next = mpf_get_root (n_coeff, coeff, root_next);
+#endif
+                }
+				if (root_next >= lower_root_bound && root_next <= upper_root_bound && (nroots == 0 || root_next - roots [nroots - 1] > root_converge_val))
+				{	roots [nroots] = root_next;
+					nroots++;
+				}
+			}
+		}
+	}
+}
+
 void solve_set (int n_one_set [max_inputs], int n_inputs)
 {	int i_one;
 	my_poly s_poly;
@@ -361,6 +487,9 @@ void solve_set (int n_one_set [max_inputs], int n_inputs)
 	int ip;
 	double p;
 	double psolve;
+	double proots [max_poly_order];
+	int nroots;
+	int iroot;
 
 	if (debug_solve)
 	{	printf ("solve");
@@ -395,6 +524,7 @@ void solve_set (int n_one_set [max_inputs], int n_inputs)
 	
 		s_poly.coeff [0] -= 0.5;
 		/* only search for a root in 0..0.5 */
+#ifdef solve_incr
 		for (ip = 0; ip < 500; ip++)
 		{	p = ip * .001;
 			if (s_poly.eval_at (p) * s_poly.eval_at (p + .001) <= 0)
@@ -404,6 +534,12 @@ void solve_set (int n_one_set [max_inputs], int n_inputs)
 				printf ("root %1.17g\n", psolve);
 			}
 		}
+#else
+		s_poly.get_all_roots (proots, nroots, true);
+		for (iroot = 0; iroot < nroots; iroot++)
+		{	printf ("mr %1.17g\n", proots [iroot]);
+		}
+#endif
 	}
 
 }
